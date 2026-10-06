@@ -2,7 +2,7 @@
   "name": "Multiplayer Sandbox",
   "author": "El_Neuman",
   "description": "Automatically connects the second game instance for easy multiplayer mod testing",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "requiredByAllPlayers": true,
   "icon": "icon.png",
   "banner": "banner.png",

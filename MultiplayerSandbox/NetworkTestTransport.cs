@@ -3,8 +3,6 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Pipes;
 using System.Threading;
-using Unity.Collections;
-using Unity.Netcode;
 using UnityEngine;
 
 namespace MultiplayerTestHarness
@@ -226,14 +224,7 @@ namespace MultiplayerTestHarness
 
         internal void SendMessage(Message message)
         {
-            byte[] payload;
-
-            using (FastBufferWriter writer = new FastBufferWriter(256, Allocator.Temp, 10485760))
-            {
-                message.SerializeFast(writer);
-                payload = writer.ToArray();
-            }
-
+            byte[] payload = NetcodeBridge.Serialize(message);
             SendFrame(NetTestFrameKind.Message, payload);
         }
 

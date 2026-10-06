@@ -4,8 +4,6 @@ using System.Reflection;
 using System.Threading;
 using HarmonyLib;
 using Steamworks;
-using Unity.Collections;
-using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -427,15 +425,7 @@ namespace MultiplayerTestHarness
             if (payload == null || payload.Length == 0)
                 return;
 
-            Message message;
-
-            using (FastBufferReader reader = new FastBufferReader(payload, Allocator.Temp, payload.Length, 0))
-            {
-                if (!reader.TryBeginRead(payload.Length))
-                    throw new InvalidOperationException("message buffer is not readable");
-
-                message = FastMessageDeserializer.DeserializeMessage<Message>(reader);
-            }
+            Message message = NetcodeBridge.Deserialize(payload);
 
             if (message == null)
                 return;

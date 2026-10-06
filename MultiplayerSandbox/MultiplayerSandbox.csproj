@@ -75,35 +75,6 @@
 			<HintPath>$(RaftDir)\Raft_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
 			<Private>false</Private>
 		</Reference>
-		<Reference Include="Unity.Netcode.Runtime">
-			<HintPath>$(RaftDir)\Raft_Data\Managed\Unity.Netcode.Runtime.dll</HintPath>
-			<Private>false</Private>
-		</Reference>
-
-		<Reference Include="Unity.Collections">
-			<HintPath>$(RaftDir)\Raft_Data\Managed\Unity.Collections.dll</HintPath>
-			<Private>false</Private>
-		</Reference>
-
-		<Reference Include="netstandard">
-			<HintPath>$(RaftDir)\Raft_Data\Managed\netstandard.dll</HintPath>
-			<Private>false</Private>
-		</Reference>
-
-		<Reference Include="Unity.Mathematics">
-			<HintPath>$(RaftDir)\Raft_Data\Managed\Unity.Mathematics.dll</HintPath>
-			<Private>false</Private>
-		</Reference>
-
-		<Reference Include="Unity.Networking.Transport">
-			<HintPath>$(RaftDir)\Raft_Data\Managed\Unity.Networking.Transport.dll</HintPath>
-			<Private>false</Private>
-		</Reference>
-
-		<Reference Include="Unity.Collections.LowLevel.ILSupport">
-			<HintPath>$(RaftDir)\Raft_Data\Managed\Unity.Collections.LowLevel.ILSupport.dll</HintPath>
-			<Private>false</Private>
-		</Reference>
 
 		<Reference Include="UnityEngine.PhysicsModule">
 			<HintPath>$(RaftDir)\Raft_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
@@ -132,29 +103,6 @@
 		<Error
 			Condition="!Exists('$(RmlBinariesDir)\0Harmony.dll')"
 			Text="0Harmony.dll не найден: $(RmlBinariesDir)\0Harmony.dll" />
-		<Error
-					Condition="!Exists('$(RaftDir)\Raft_Data\Managed\Unity.Netcode.Runtime.dll')"
-					Text="Unity.Netcode.Runtime.dll не найден: $(RaftDir)\Raft_Data\Managed\Unity.Netcode.Runtime.dll" />
-
-		<Error
-			Condition="!Exists('$(RaftDir)\Raft_Data\Managed\Unity.Collections.dll')"
-			Text="Unity.Collections.dll не найден: $(RaftDir)\Raft_Data\Managed\Unity.Collections.dll" />
-
-		<Error
-			Condition="!Exists('$(RaftDir)\Raft_Data\Managed\netstandard.dll')"
-			Text="netstandard.dll не найден: $(RaftDir)\Raft_Data\Managed\netstandard.dll" />
-
-		<Error
-			Condition="!Exists('$(RaftDir)\Raft_Data\Managed\Unity.Mathematics.dll')"
-			Text="Unity.Mathematics.dll не найден: $(RaftDir)\Raft_Data\Managed\Unity.Mathematics.dll" />
-
-		<Error
-			Condition="!Exists('$(RaftDir)\Raft_Data\Managed\Unity.Networking.Transport.dll')"
-			Text="Unity.Networking.Transport.dll не найден: $(RaftDir)\Raft_Data\Managed\Unity.Networking.Transport.dll" />
-
-		<Error
-			Condition="!Exists('$(RaftDir)\Raft_Data\Managed\Unity.Collections.LowLevel.ILSupport.dll')"
-			Text="Unity.Collections.LowLevel.ILSupport.dll не найден: $(RaftDir)\Raft_Data\Managed\Unity.Collections.LowLevel.ILSupport.dll" />
 
 		<Error
 			Condition="!Exists('$(RmlPublicizedDir)\Assembly-CSharp.dll')"

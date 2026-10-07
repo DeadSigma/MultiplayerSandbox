@@ -477,8 +477,20 @@ namespace MultiplayerTestHarness
 
         internal static bool TryRouteRpc(Raft_Network network, Message message, Target target)
         {
-            if (!IsHost || _transport == null || !_transport.Connected || network == null || message == null)
+            if (!_booted || _transport == null || !_transport.Connected || network == null || message == null)
                 return false;
+
+            if (IsClient)
+            {
+                if (!_hostId.IsValid())
+                    return false;
+
+                if (target == Target.All)
+                    DispatchLocal(message, network.LocalSteamID);
+
+                _transport.SendMessage(message);
+                return true;
+            }
 
             if (!HostHasFakeClient(network))
                 return false;
@@ -492,8 +504,19 @@ namespace MultiplayerTestHarness
 
         internal static bool TryRouteRpcExclude(Raft_Network network, Message message, Target target, Network_UserId excludeId)
         {
-            if (!IsHost || _transport == null || !_transport.Connected || network == null || message == null)
+            if (!_booted || _transport == null || !_transport.Connected || network == null || message == null)
                 return false;
+
+            if (IsClient)
+            {
+                if (!_hostId.IsValid())
+                    return false;
+
+                if (excludeId != _hostId)
+                    _transport.SendMessage(message);
+
+                return true;
+            }
 
             if (!HostHasFakeClient(network))
                 return false;
@@ -927,17 +950,20 @@ namespace MultiplayerTestHarness
 
             if (!network.remoteUsers.ContainsKey(sender))
             {
-                Network_Player player = InternalAddPlayerMethod.Invoke(
+                Network_Player fakePlayer = InternalAddPlayerMethod.Invoke(
                     network,
                     new object[] { sender, message.characterSettings }) as Network_Player;
 
-                if (player == null)
+                if (fakePlayer == null || !network.remoteUsers.ContainsKey(sender))
                 {
                     Debug.LogError("[NetTest] не удалось создать fake client id=" + sender.Id);
                     return;
                 }
 
-                Debug.Log("[NetTest] fake client добавлен напрямую id=" + sender.Id);
+                Debug.Log(
+                    "[NetTest] fake client добавлен id=" + sender.Id +
+                    " object=" + fakePlayer.ObjectIndex +
+                    " behaviour=" + fakePlayer.BehaviourIndex);
             }
 
             network.SendP2P(

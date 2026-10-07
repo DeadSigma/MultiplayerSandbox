@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Reflection;
 using HarmonyLib;
+using UnityEngine;
 
 namespace MultiplayerTestHarness
 {
@@ -18,6 +19,9 @@ namespace MultiplayerTestHarness
 
         static Harmony _harmony;
 
+        // По умолчанию следующий HOST запускается как Network Test
+        static bool _useNetworkTestForNextHost = true;
+
         internal static void Install()
         {
             if (_harmony != null)
@@ -28,6 +32,7 @@ namespace MultiplayerTestHarness
             _harmony.CreateClassProcessor(typeof(Patch_LoadGameBox_Update)).Patch();
             _harmony.CreateClassProcessor(typeof(Patch_NewGameBox_Create)).Patch();
             _harmony.CreateClassProcessor(typeof(Patch_LoadGameBox_Load)).Patch();
+            _harmony.CreateClassProcessor(typeof(Patch_RaftNetwork_HostGame)).Patch();
         }
 
         internal static void Uninstall()
@@ -171,6 +176,9 @@ namespace MultiplayerTestHarness
                 return;
 
             options.Add(option);
+
+            // Добавленный режим сразу выбирается по умолчанию
+            SetValue(dropdown, options.Count - 1);
             Refresh(dropdown);
         }
 
@@ -185,10 +193,24 @@ namespace MultiplayerTestHarness
             return GetOptionText(options[value]) == Label;
         }
 
+        static void UpdateSelection(object dropdown)
+        {
+            if (dropdown == null)
+                return;
+
+            EnsureOption(dropdown);
+            _useNetworkTestForNextHost = IsSelected(dropdown);
+        }
+
         static void BeginHost(object dropdown)
         {
             if (!IsSelected(dropdown))
+            {
+                _useNetworkTestForNextHost = false;
                 return;
+            }
+
+            _useNetworkTestForNextHost = true;
 
             if (!NetworkTest.StartHost())
                 return;
@@ -203,7 +225,7 @@ namespace MultiplayerTestHarness
         {
             static void Postfix(NewGameBox __instance)
             {
-                EnsureOption(GetDropdown(__instance));
+                UpdateSelection(GetDropdown(__instance));
             }
         }
 
@@ -212,7 +234,7 @@ namespace MultiplayerTestHarness
         {
             static void Postfix(LoadGameBox __instance)
             {
-                EnsureOption(GetDropdown(__instance));
+                UpdateSelection(GetDropdown(__instance));
             }
         }
 
@@ -231,6 +253,37 @@ namespace MultiplayerTestHarness
             static void Prefix(LoadGameBox __instance)
             {
                 BeginHost(GetDropdown(__instance));
+            }
+        }
+
+        [HarmonyPatch]
+        static class Patch_RaftNetwork_HostGame
+        {
+            static MethodBase TargetMethod()
+            {
+                return AccessTools.Method(
+                    typeof(Raft_Network),
+                    nameof(Raft_Network.HostGame),
+                    new[]
+                    {
+                        typeof(RequestJoinAuthSetting),
+                        typeof(string)
+                    });
+            }
+
+            static void Prefix()
+            {
+                if (!_useNetworkTestForNextHost)
+                    return;
+
+                if (NetworkTest.IsActive)
+                    return;
+
+                if (NetworkTest.HostSessionExists())
+                    return;
+
+                // Прямой HostGame из dev-автозагрузки тоже переводится в Network Test
+                NetworkTest.StartHost();
             }
         }
     }

@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
@@ -14,6 +15,10 @@ namespace MultiplayerTestHarness
         static Func<Message, byte[]> _serialize;
         static Func<byte[], Message> _deserialize;
         static Func<byte[], Message> _deserializeRMessage;
+
+        static readonly Dictionary<Type, Func<byte[], Message>>
+            TypedDeserializers =
+                new Dictionary<Type, Func<byte[], Message>>();
 
         static Type WriterType => _writerType ?? (_writerType = FindType("Unity.Netcode.FastBufferWriter"));
         static Type ReaderType => _readerType ?? (_readerType = FindType("Unity.Netcode.FastBufferReader"));
@@ -66,6 +71,384 @@ namespace MultiplayerTestHarness
                 _deserialize = BuildDeserialize();
 
             return _deserialize(payload);
+        }
+
+        internal static Message DeserializeTyped(
+            byte[] payload,
+            string typeName)
+        {
+            if (payload == null ||
+                payload.Length < 2 ||
+                string.IsNullOrEmpty(typeName))
+                return null;
+
+            Type messageType =
+                ResolveMessageType(typeName);
+
+            if (messageType == null)
+                throw new TypeLoadException(
+                    "Не найден тип mod message: " +
+                    typeName
+                );
+
+            if (!typeof(Message).IsAssignableFrom(
+                    messageType))
+                throw new InvalidOperationException(
+                    "Тип не наследуется от Message: " +
+                    messageType.FullName
+                );
+
+            Func<byte[], Message> deserializer;
+
+            lock (TypedDeserializers)
+            {
+                if (!TypedDeserializers.TryGetValue(
+                        messageType,
+                        out deserializer))
+                {
+                    deserializer =
+                        BuildTypedDeserialize(
+                            messageType
+                        );
+
+                    TypedDeserializers[
+                        messageType
+                    ] = deserializer;
+                }
+            }
+
+            Message message =
+                deserializer(payload);
+
+            short encodedType =
+                BitConverter.ToInt16(
+                    payload,
+                    0
+                );
+
+            if (message != null &&
+                encodedType != -1)
+            {
+                RestoreMessageType(
+                    message,
+                    encodedType
+                );
+            }
+
+            return message;
+        }
+
+        static void RestoreMessageType(
+            Message message,
+            short encodedType)
+        {
+            if (message == null)
+                return;
+
+            Messages type =
+                (Messages)encodedType;
+
+            PropertyInfo property =
+                typeof(Message).GetProperty(
+                    "Type",
+                    BindingFlags.Instance |
+                    BindingFlags.Public |
+                    BindingFlags.NonPublic
+                );
+
+            if (property != null)
+            {
+                MethodInfo setter =
+                    property.GetSetMethod(
+                        true
+                    );
+
+                if (setter != null)
+                {
+                    setter.Invoke(
+                        message,
+                        new object[]
+                        {
+                            type
+                        }
+                    );
+
+                    return;
+                }
+            }
+
+            string[] fieldNames =
+            {
+                "Type",
+                "type",
+                "_type",
+                "<Type>k__BackingField"
+            };
+
+            for (int i = 0;
+                 i < fieldNames.Length;
+                 i++)
+            {
+                FieldInfo field =
+                    typeof(Message).GetField(
+                        fieldNames[i],
+                        BindingFlags.Instance |
+                        BindingFlags.Public |
+                        BindingFlags.NonPublic
+                    );
+
+                if (field == null)
+                    continue;
+
+                field.SetValue(
+                    message,
+                    type
+                );
+
+                return;
+            }
+
+            throw new MissingMemberException(
+                "Message.Type"
+            );
+        }
+
+        static Type ResolveMessageType(
+            string typeName)
+        {
+            Type type =
+                Type.GetType(
+                    typeName,
+                    false
+                );
+
+            if (type != null)
+                return type;
+
+            string fullName =
+                typeName;
+
+            int comma =
+                fullName.IndexOf(',');
+
+            if (comma >= 0)
+                fullName =
+                    fullName.Substring(
+                        0,
+                        comma
+                    ).Trim();
+
+            type =
+                AccessTools.TypeByName(
+                    fullName
+                );
+
+            if (type != null)
+                return type;
+
+            Assembly[] assemblies =
+                AppDomain.CurrentDomain
+                    .GetAssemblies();
+
+            for (int i = 0;
+                 i < assemblies.Length;
+                 i++)
+            {
+                try
+                {
+                    type =
+                        assemblies[i].GetType(
+                            fullName,
+                            false
+                        );
+
+                    if (type != null)
+                        return type;
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
+        static Func<byte[], Message>
+            BuildTypedDeserialize(
+                Type messageType)
+        {
+            ConstructorInfo readerConstructor =
+                FindReaderConstructor();
+
+            ParameterInfo[] readerParameters =
+                readerConstructor.GetParameters();
+
+            if (readerParameters.Length != 4)
+            {
+                throw new MissingMethodException(
+                    "Для mod message требуется FastBufferReader(byte[], Allocator, int, int)"
+                );
+            }
+
+            ConstructorInfo messageConstructor =
+                messageType.GetConstructor(
+                    BindingFlags.Instance |
+                    BindingFlags.Public |
+                    BindingFlags.NonPublic,
+                    null,
+                    Type.EmptyTypes,
+                    null
+                );
+
+            if (messageConstructor == null)
+                throw new MissingMethodException(
+                    messageType.FullName +
+                    " constructor"
+                );
+
+            MethodInfo deserializeFast =
+                messageType.GetMethod(
+                    "DeserializeFast",
+                    BindingFlags.Instance |
+                    BindingFlags.Public |
+                    BindingFlags.NonPublic,
+                    null,
+                    new[] { ReaderType },
+                    null
+                );
+
+            if (deserializeFast == null)
+                throw new MissingMethodException(
+                    messageType.FullName +
+                    ".DeserializeFast"
+                );
+
+            MethodInfo dispose =
+                ReaderType.GetMethod(
+                    "Dispose",
+                    BindingFlags.Instance |
+                    BindingFlags.Public |
+                    BindingFlags.NonPublic,
+                    null,
+                    Type.EmptyTypes,
+                    null
+                );
+
+            DynamicMethod method =
+                new DynamicMethod(
+                    "MPTest_DeserializeTyped_" +
+                    messageType.Name,
+                    typeof(Message),
+                    new[] { typeof(byte[]) },
+                    typeof(NetcodeBridge).Module,
+                    true
+                );
+
+            ILGenerator il =
+                method.GetILGenerator();
+
+            LocalBuilder reader =
+                il.DeclareLocal(
+                    ReaderType
+                );
+
+            LocalBuilder message =
+                il.DeclareLocal(
+                    messageType
+                );
+
+            il.Emit(
+                OpCodes.Ldloca_S,
+                reader
+            );
+
+            il.Emit(
+                OpCodes.Ldarg_0
+            );
+
+            EmitTempAllocator(il);
+
+            il.Emit(
+                OpCodes.Ldarg_0
+            );
+
+            il.Emit(
+                OpCodes.Ldlen
+            );
+
+            il.Emit(
+                OpCodes.Conv_I4
+            );
+
+            il.Emit(
+                OpCodes.Ldc_I4_2
+            );
+
+            il.Emit(
+                OpCodes.Sub
+            );
+
+            il.Emit(
+                OpCodes.Ldc_I4_2
+            );
+
+            il.Emit(
+                OpCodes.Call,
+                readerConstructor
+            );
+
+            il.Emit(
+                OpCodes.Newobj,
+                messageConstructor
+            );
+
+            il.Emit(
+                OpCodes.Stloc,
+                message
+            );
+
+            il.Emit(
+                OpCodes.Ldloc,
+                message
+            );
+
+            il.Emit(
+                OpCodes.Ldloc,
+                reader
+            );
+
+            il.Emit(
+                OpCodes.Callvirt,
+                deserializeFast
+            );
+
+            if (dispose != null)
+            {
+                il.Emit(
+                    OpCodes.Ldloca_S,
+                    reader
+                );
+
+                il.Emit(
+                    OpCodes.Call,
+                    dispose
+                );
+            }
+
+            il.Emit(
+                OpCodes.Ldloc,
+                message
+            );
+
+            il.Emit(
+                OpCodes.Ret
+            );
+
+            return
+                (Func<byte[], Message>)
+                method.CreateDelegate(
+                    typeof(Func<byte[], Message>)
+                );
         }
 
         static Func<Message, byte[]> BuildSerialize()

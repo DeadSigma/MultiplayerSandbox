@@ -1,11 +1,16 @@
-﻿using System;
+using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.Serialization;
 using System.Threading;
 using HarmonyLib;
+using HMLLibrary;
 using Steamworks;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+
+#pragma warning disable CS0618
 
 namespace MultiplayerTestHarness
 {
@@ -51,6 +56,41 @@ namespace MultiplayerTestHarness
         static int _lastTransportDisconnectSerial;
         static bool _booted;
 
+        sealed class PendingModMessage
+        {
+            internal CSteamID Sender;
+            internal Message Message;
+        }
+
+        static readonly Dictionary<int, Queue<PendingModMessage>>
+            PendingModMessages =
+                new Dictionary<int, Queue<PendingModMessage>>();
+
+
+        static readonly FieldInfo NetworkMessageSteamIdField =
+            AccessTools.Field(
+                typeof(NetworkMessage),
+                "steamid"
+            );
+
+        static readonly FieldInfo NetworkMessageMessageField =
+            AccessTools.Field(
+                typeof(NetworkMessage),
+                "message"
+            );
+
+        static readonly PropertyInfo NetworkMessageSteamIdProperty =
+            AccessTools.Property(
+                typeof(NetworkMessage),
+                "steamid"
+            );
+
+        static readonly PropertyInfo NetworkMessageMessageProperty =
+            AccessTools.Property(
+                typeof(NetworkMessage),
+                "message"
+            );
+
         const string HostSessionMutexName = "Local\\RaftMultiplayerTestHost_v1";
 
         internal static NetworkTestRole Role { get; private set; }
@@ -94,8 +134,19 @@ namespace MultiplayerTestHarness
 
             if (!Boot(NetworkTestRole.Host, true))
             {
-                _hostSessionMutex.Dispose();
-                _hostSessionMutex = null;
+                if (_hostSessionMutex != null)
+                {
+                    try
+                    {
+                        _hostSessionMutex.Dispose();
+                    }
+                    catch
+                    {
+                    }
+
+                    _hostSessionMutex = null;
+                }
+
                 return false;
             }
 
@@ -134,6 +185,16 @@ namespace MultiplayerTestHarness
                     Patch(typeof(Patch_RaftNetwork_SendP2P));
                     Patch(typeof(Patch_RaftNetwork_RPC));
                     Patch(typeof(Patch_RaftNetwork_RPCExclude));
+
+                    PatchOptional(
+                        typeof(Patch_RAPI_SendNetworkMessage),
+                        "RAPI.SendNetworkMessage"
+                    );
+
+                    PatchOptional(
+                        typeof(Patch_RAPI_ListenForNetworkMessagesOnChannel),
+                        "RAPI.ListenForNetworkMessagesOnChannel"
+                    );
                 }
 
                 _booted = true;
@@ -151,6 +212,25 @@ namespace MultiplayerTestHarness
         static void Patch(Type type)
         {
             _harmony.CreateClassProcessor(type).Patch();
+        }
+
+        static void PatchOptional(
+            Type type,
+            string name)
+        {
+            try
+            {
+                _harmony.CreateClassProcessor(type).Patch();
+            }
+            catch (Exception e)
+            {
+                Debug.LogError(
+                    "[NetTest][RAPI] patch FAILED " +
+                    name +
+                    ": " +
+                    e
+                );
+            }
         }
 
         internal static void Shutdown()
@@ -197,6 +277,13 @@ namespace MultiplayerTestHarness
             _clientFinalizeDelayFrames = 0;
             _clientWaitLogFrames = 0;
             _lastTransportDisconnectSerial = 0;
+
+            lock (PendingModMessages)
+            {
+                PendingModMessages.Clear();
+            }
+
+
             _booted = false;
         }
 
@@ -214,6 +301,8 @@ namespace MultiplayerTestHarness
                         ReceiveHandshake(frame.Payload);
                     else if (frame.Kind == NetTestFrameKind.Message)
                         ReceiveMessage(frame.Payload);
+                    else if (frame.Kind == NetTestFrameKind.ModMessage)
+                        ReceiveModMessage(frame.Payload);
                 }
                 catch (Exception e)
                 {
@@ -418,6 +507,350 @@ namespace MultiplayerTestHarness
         static bool HostHasFakeClient(Raft_Network network)
         {
             return network.remoteUsers != null && network.remoteUsers.ContainsKey(FakeClientId);
+        }
+
+        public static bool TryRouteRapiMessage(
+            Message message,
+            int channel,
+            Target target)
+        {
+            if (!_booted ||
+                _transport == null ||
+                !_transport.Connected ||
+                message == null)
+            {
+                return false;
+            }
+
+            Raft_Network network =
+                ComponentManager<Raft_Network>.Value;
+
+            if (network == null)
+            {
+                return false;
+            }
+
+            if (IsHost)
+            {
+                if (target == Target.All)
+                {
+                    QueueModMessage(
+                        channel,
+                        new CSteamID(
+                            network.LocalSteamID.Id
+                        ),
+                        message
+                    );
+                }
+
+                _transport.SendModMessage(
+                    channel,
+                    message
+                );
+
+                return true;
+            }
+
+            if (!_hostId.IsValid())
+            {
+                return false;
+            }
+
+            if (target == Target.All)
+            {
+                QueueModMessage(
+                    channel,
+                    new CSteamID(
+                        FakeClientIdValue
+                    ),
+                    message
+                );
+            }
+
+            _transport.SendModMessage(
+                channel,
+                message
+            );
+
+            return true;
+        }
+
+        public static bool TryListenForRapiMessage(
+            int channel,
+            out NetworkMessage result)
+        {
+            result =
+                default(NetworkMessage);
+
+            PendingModMessage pending =
+                null;
+
+            lock (PendingModMessages)
+            {
+                Queue<PendingModMessage> queue;
+
+                if (!PendingModMessages.TryGetValue(
+                        channel,
+                        out queue) ||
+                    queue == null ||
+                    queue.Count == 0)
+                {
+                    return false;
+                }
+
+                pending =
+                    queue.Dequeue();
+            }
+
+            result =
+                CreateNetworkMessage(
+                    pending.Sender,
+                    pending.Message
+                );
+
+            return true;
+        }
+
+        static void ReceiveModMessage(
+            byte[] payload)
+        {
+            int channel;
+            string typeName;
+            byte[] messagePayload;
+
+            NetworkTestTransport.DecodeModMessage(
+                payload,
+                out channel,
+                out typeName,
+                out messagePayload
+            );
+
+            Message message =
+                NetcodeBridge.DeserializeTyped(
+                    messagePayload,
+                    typeName
+                );
+
+            if (message == null)
+            {
+                return;
+            }
+
+            CSteamID sender =
+                IsHost
+                    ? new CSteamID(
+                        FakeClientIdValue
+                    )
+                    : new CSteamID(
+                        _hostId.Id
+                    );
+
+            QueueModMessage(
+                channel,
+                sender,
+                message
+            );
+        }
+
+        static void QueueModMessage(
+            int channel,
+            CSteamID sender,
+            Message message)
+        {
+            if (message == null)
+                return;
+
+            lock (PendingModMessages)
+            {
+                Queue<PendingModMessage> queue;
+
+                if (!PendingModMessages.TryGetValue(
+                        channel,
+                        out queue))
+                {
+                    queue =
+                        new Queue<PendingModMessage>();
+
+                    PendingModMessages[
+                        channel
+                    ] = queue;
+                }
+
+                queue.Enqueue(
+                    new PendingModMessage
+                    {
+                        Sender = sender,
+                        Message = message
+                    }
+                );
+            }
+        }
+
+        static NetworkMessage CreateNetworkMessage(
+            CSteamID sender,
+            Message message)
+        {
+            Type type =
+                typeof(NetworkMessage);
+
+            object boxed;
+
+            if (type.IsValueType)
+            {
+                boxed =
+                    Activator.CreateInstance(
+                        type
+                    );
+            }
+            else
+            {
+                try
+                {
+                    boxed =
+                        Activator.CreateInstance(
+                            type,
+                            true
+                        );
+                }
+                catch
+                {
+                    boxed =
+                        FormatterServices
+                            .GetUninitializedObject(
+                                type
+                            );
+                }
+            }
+
+            bool senderAssigned = false;
+            bool messageAssigned = false;
+
+            FieldInfo[] fields =
+                type.GetFields(
+                    BindingFlags.Instance |
+                    BindingFlags.Public |
+                    BindingFlags.NonPublic
+                );
+
+            for (int i = 0;
+                 i < fields.Length;
+                 i++)
+            {
+                FieldInfo field =
+                    fields[i];
+
+                if (!messageAssigned &&
+                    typeof(Message).IsAssignableFrom(
+                        field.FieldType
+                    ))
+                {
+                    field.SetValue(
+                        boxed,
+                        message
+                    );
+
+                    messageAssigned = true;
+                    continue;
+                }
+
+                if (!senderAssigned &&
+                    field.FieldType ==
+                        typeof(CSteamID))
+                {
+                    field.SetValue(
+                        boxed,
+                        sender
+                    );
+
+                    senderAssigned = true;
+                    continue;
+                }
+
+                if (!senderAssigned &&
+                    field.FieldType ==
+                        typeof(Network_UserId))
+                {
+                    field.SetValue(
+                        boxed,
+                        new Network_UserId(
+                            sender.m_SteamID
+                        )
+                    );
+
+                    senderAssigned = true;
+                }
+            }
+
+            PropertyInfo[] properties =
+                type.GetProperties(
+                    BindingFlags.Instance |
+                    BindingFlags.Public |
+                    BindingFlags.NonPublic
+                );
+
+            for (int i = 0;
+                 i < properties.Length;
+                 i++)
+            {
+                PropertyInfo property =
+                    properties[i];
+
+                if (!property.CanWrite)
+                    continue;
+
+                if (!messageAssigned &&
+                    typeof(Message).IsAssignableFrom(
+                        property.PropertyType
+                    ))
+                {
+                    property.SetValue(
+                        boxed,
+                        message,
+                        null
+                    );
+
+                    messageAssigned = true;
+                    continue;
+                }
+
+                if (!senderAssigned &&
+                    property.PropertyType ==
+                        typeof(CSteamID))
+                {
+                    property.SetValue(
+                        boxed,
+                        sender,
+                        null
+                    );
+
+                    senderAssigned = true;
+                    continue;
+                }
+
+                if (!senderAssigned &&
+                    property.PropertyType ==
+                        typeof(Network_UserId))
+                {
+                    property.SetValue(
+                        boxed,
+                        new Network_UserId(
+                            sender.m_SteamID
+                        ),
+                        null
+                    );
+
+                    senderAssigned = true;
+                }
+            }
+
+            if (!messageAssigned)
+            {
+                throw new MissingMemberException(
+                    "NetworkMessage.Message"
+                );
+            }
+
+            return (NetworkMessage)boxed;
         }
 
         static void ReceiveMessage(byte[] payload)

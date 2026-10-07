@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Pipes;
@@ -10,7 +10,8 @@ namespace MultiplayerTestHarness
     internal enum NetTestFrameKind : byte
     {
         Handshake = 1,
-        Message = 2
+        Message = 2,
+        ModMessage = 3
     }
 
     internal sealed class NetTestFrame
@@ -226,6 +227,75 @@ namespace MultiplayerTestHarness
         {
             byte[] payload = NetcodeBridge.Serialize(message);
             SendFrame(NetTestFrameKind.Message, payload);
+        }
+
+        internal void SendModMessage(
+            int channel,
+            Message message)
+        {
+            if (message == null)
+                return;
+
+            byte[] messagePayload =
+                NetcodeBridge.Serialize(message);
+
+            string typeName =
+                message.GetType().AssemblyQualifiedName ??
+                message.GetType().FullName;
+
+            byte[] payload;
+
+            using (MemoryStream ms = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(ms))
+            {
+                writer.Write(channel);
+                writer.Write(typeName ?? string.Empty);
+                writer.Write(messagePayload.Length);
+                writer.Write(messagePayload);
+                writer.Flush();
+
+                payload = ms.ToArray();
+            }
+
+            SendFrame(
+                NetTestFrameKind.ModMessage,
+                payload
+            );
+        }
+
+        internal static void DecodeModMessage(
+            byte[] payload,
+            out int channel,
+            out string typeName,
+            out byte[] messagePayload)
+        {
+            channel = 0;
+            typeName = null;
+            messagePayload = null;
+
+            if (payload == null ||
+                payload.Length == 0)
+                return;
+
+            using (MemoryStream ms = new MemoryStream(payload))
+            using (BinaryReader reader = new BinaryReader(ms))
+            {
+                channel = reader.ReadInt32();
+                typeName = reader.ReadString();
+
+                int length = reader.ReadInt32();
+
+                if (length < 0 ||
+                    length > MaxFrameSize ||
+                    length > ms.Length - ms.Position)
+                    throw new InvalidDataException(
+                        "invalid mod message length " +
+                        length
+                    );
+
+                messagePayload =
+                    reader.ReadBytes(length);
+            }
         }
 
         void SendFrame(NetTestFrameKind kind, byte[] payload)

@@ -40,6 +40,8 @@ namespace MultiplayerTestHarness
         static readonly MethodInfo SendWorldMethod = AccessTools.Method(typeof(Raft_Network), "SendWorld");
         static readonly MethodInfo WorldHasBeenLoadedMethod = AccessTools.Method(typeof(Raft_Network), "WorldHasBeenLoaded");
 
+        static readonly FieldInfo NetworkSubscribersField = FindNetworkSubscribersField();
+
         static Harmony _harmony;
         static Mutex _hostSessionMutex;
         static NetworkTestTransport _transport;
@@ -905,6 +907,13 @@ namespace MultiplayerTestHarness
                 return;
             }
 
+            RMessage custom = message as RMessage;
+            if (custom != null)
+            {
+                DispatchRmlMessage(custom, sender);
+                return;
+            }
+
             if (message.Type == Messages.CreatePlayer)
             {
                 Message_Player_Create create = message as Message_Player_Create;
@@ -941,6 +950,62 @@ namespace MultiplayerTestHarness
 
             if (IsClient && worldReceived)
                 QueueClientWorldLoaded();
+        }
+
+        static FieldInfo FindNetworkSubscribersField()
+        {
+            Type type = AccessTools.TypeByName("HMLLibrary.HLib") ?? AccessTools.TypeByName("HLib");
+            return type != null ? AccessTools.Field(type, "networkChannelsSubscribers") : null;
+        }
+
+        static void DispatchRmlMessage(RMessage message, Network_UserId sender)
+        {
+            if (message == null)
+                return;
+
+            if (RNetwork.HandleInternalMessage(message.modslug, message.realMsg, sender))
+                return;
+
+            // Совместимость со старыми каналами RAPI
+            Message legacy = message.realMsg as Message;
+            if (legacy != null && message.modslug != null &&
+                message.modslug.StartsWith("oldmsg_", StringComparison.Ordinal))
+            {
+                NetworkMessage entry = new NetworkMessage(
+                    legacy,
+                    new CSteamID(sender.Id),
+                    new List<Message>());
+                entry.modslug = message.modslug;
+                RNetwork.oldNetworkingMessageQueue.Add(entry);
+            }
+
+            if (message.modslug == null || NetworkSubscribersField == null)
+                return;
+
+            IDictionary registry = NetworkSubscribersField.GetValue(null) as IDictionary;
+            if (registry == null || !registry.Contains(message.modslug))
+                return;
+
+            IEnumerable subscribers = registry[message.modslug] as IEnumerable;
+            if (subscribers == null)
+                return;
+
+            foreach (object entry in subscribers)
+            {
+                Mod mod = entry as Mod;
+                if (mod == null)
+                    continue;
+
+                try
+                {
+                    if (mod.OnNetworkMessage(message.realMsg, sender, message.modslug))
+                        break;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError("[NetTest][RML] Receive failed mod=" + mod.name + ": " + e);
+                }
+            }
         }
 
         static void HandlePlayerJoined(Raft_Network network, Message_PlayerJoined message, Network_UserId sender)
@@ -1086,6 +1151,13 @@ namespace MultiplayerTestHarness
                 for (int i = 0; i < compound.messages.Count; i++)
                     DispatchLocal(compound.messages[i], localId);
 
+                return;
+            }
+
+            RMessage custom = message as RMessage;
+            if (custom != null)
+            {
+                DispatchRmlMessage(custom, localId);
                 return;
             }
 
